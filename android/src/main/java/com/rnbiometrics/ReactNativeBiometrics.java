@@ -11,6 +11,11 @@ import androidx.biometric.BiometricPrompt.AuthenticationCallback;
 import androidx.biometric.BiometricPrompt.PromptInfo;
 import androidx.fragment.app.FragmentActivity;
 
+import android.content.Context;
+import android.content.Intent;
+import android.provider.Settings;
+import android.util.Pair;
+
 import com.facebook.react.bridge.Promise;
 import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReactContextBaseJavaModule;
@@ -29,6 +34,11 @@ import java.security.Signature;
 import java.security.spec.RSAKeyGenParameterSpec;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
+import android.content.pm.PackageManager;
+
+import android.app.Activity;
+import com.facebook.react.bridge.ActivityEventListener;
+import androidx.annotation.Nullable;
 
 /**
  * Created by brandon on 4/5/18.
@@ -37,9 +47,32 @@ import java.util.concurrent.Executors;
 public class ReactNativeBiometrics extends ReactContextBaseJavaModule {
 
     protected String biometricKeyAlias = "biometric_key";
+    private static final int BIOMETRIC_ENROLL_REQUEST_CODE = 1001;
+    private Promise enrollmentPromise;
 
     public ReactNativeBiometrics(ReactApplicationContext reactContext) {
         super(reactContext);
+
+        reactContext.addActivityEventListener(new ActivityEventListener() {
+            @Override
+            public void onActivityResult(Activity activity, int requestCode, int resultCode, @Nullable Intent data) {
+                if (requestCode == BIOMETRIC_ENROLL_REQUEST_CODE) {
+                    // Resolve or reject the promise based on result
+                    if (resultCode == Activity.RESULT_OK) {
+                        WritableMap resultMap = new WritableNativeMap();
+                        resultMap.putBoolean("success", true);
+                        enrollmentPromise.resolve(resultMap);
+                    } else {
+                        WritableMap resultMap = new WritableNativeMap();
+                        resultMap.putBoolean("success", false);
+                        enrollmentPromise.resolve(resultMap);
+                    }
+                }
+            }
+
+            @Override
+            public void onNewIntent(Intent intent) {}
+        });
     }
 
     @Override
@@ -59,7 +92,9 @@ public class ReactNativeBiometrics extends ReactContextBaseJavaModule {
                 if (canAuthenticate == BiometricManager.BIOMETRIC_SUCCESS) {
                     WritableMap resultMap = new WritableNativeMap();
                     resultMap.putBoolean("available", true);
-                    resultMap.putString("biometryType", "Biometrics");
+                    Pair<String, Boolean> biometryType = BiometricUtils.getBiometricType(reactApplicationContext);
+                    resultMap.putString("biometryType", biometryType.first );
+                    resultMap.putString("isBiometricEnrolled", biometryType.second ? "YES" : "NO");
                     promise.resolve(resultMap);
                 } else {
                     WritableMap resultMap = new WritableNativeMap();
@@ -75,9 +110,6 @@ public class ReactNativeBiometrics extends ReactContextBaseJavaModule {
                         case BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED:
                             resultMap.putString("error", "BIOMETRIC_ERROR_NONE_ENROLLED");
                             break;
-                        case BiometricManager.BIOMETRIC_ERROR_SECURITY_UPDATE_REQUIRED:
-                            resultMap.putString("error", "BIOMETRIC_ERROR_SECURITY_UPDATE_REQUIRED");
-                            break; 
                     }
 
                     promise.resolve(resultMap);
@@ -248,6 +280,13 @@ public class ReactNativeBiometrics extends ReactContextBaseJavaModule {
         }
     }
 
+    @ReactMethod
+    public void promptEnrollBiometrics(Promise promise) {
+        this.enrollmentPromise = promise;
+        Context context = getReactApplicationContext();
+        promptEnrollBiometrics(context);
+    }
+
     protected boolean doesBiometricKeyExist() {
         try {
             KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
@@ -269,5 +308,81 @@ public class ReactNativeBiometrics extends ReactContextBaseJavaModule {
         } catch (Exception e) {
             return false;
         }
+    }
+
+    void promptEnrollBiometrics(Context context) {
+        Activity activity = getCurrentActivity();
+        if (activity != null) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                Intent enrollIntent = new Intent(Settings.ACTION_BIOMETRIC_ENROLL);
+                activity.startActivityForResult(enrollIntent, BIOMETRIC_ENROLL_REQUEST_CODE);
+            } else {
+                Intent enrollIntent = new Intent(Settings.ACTION_SECURITY_SETTINGS);
+                activity.startActivityForResult(enrollIntent, BIOMETRIC_ENROLL_REQUEST_CODE);
+            }
+        } else {
+            throw new IllegalArgumentException("Context is not an instance of Activity");
+        }
+    }
+}
+
+class BiometricUtils {
+    static Pair<String, Boolean> getBiometricType(Context context) {
+        String[] biometricTypeArray = new String[2];
+        boolean[] isBiometricEnrolledArray = new boolean[2];
+
+        // Check fingerprint support and enrollment
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            android.hardware.fingerprint.FingerprintManager fingerprintManager =
+                    (android.hardware.fingerprint.FingerprintManager) context.getSystemService(Context.FINGERPRINT_SERVICE);
+
+            if (fingerprintManager != null) {
+                if (fingerprintManager.isHardwareDetected()) {
+                    biometricTypeArray[0] = "TouchID";
+                    if (fingerprintManager.hasEnrolledFingerprints()) {
+                        isBiometricEnrolledArray[0] = true;
+                    } else {
+                        isBiometricEnrolledArray[0] = false;
+                    }
+                }
+            }
+        }
+
+         // Check biometric manager for face recognition and general biometrics
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            BiometricManager biometricManager = BiometricManager.from(context);
+
+            int canAuthenticate = biometricManager.canAuthenticate(
+                    BiometricManager.Authenticators.BIOMETRIC_STRONG |
+                    BiometricManager.Authenticators.BIOMETRIC_WEAK);
+
+            biometricTypeArray[1] = "FaceID";
+            if (canAuthenticate == BiometricManager.BIOMETRIC_SUCCESS) {
+                isBiometricEnrolledArray[1] = true;
+            } else {
+                isBiometricEnrolledArray[1] = false;
+            }
+        }
+
+        if (biometricTypeArray.length > 0) { 
+            if (biometricTypeArray[0] == "TouchID") {
+                if (isBiometricEnrolledArray[0]) {
+                    return new Pair<>(biometricTypeArray[0], isBiometricEnrolledArray[0]);
+                } else {
+                    if (biometricTypeArray[1] == "FaceID") {
+                        if (isBiometricEnrolledArray[1]) {
+                            return new Pair<>(biometricTypeArray[1], isBiometricEnrolledArray[1]);
+                        } else {
+                            return new Pair<>(biometricTypeArray[0], isBiometricEnrolledArray[0]);
+                        }
+                    } else {
+                        return new Pair<>(biometricTypeArray[0], isBiometricEnrolledArray[0]);
+                    }
+                }
+            } else {
+                return new Pair<>(biometricTypeArray[1], isBiometricEnrolledArray[1]);
+            }
+        }
+        return new Pair<>("Undefined", false);
     }
 }

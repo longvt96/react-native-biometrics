@@ -27,11 +27,29 @@ RCT_EXPORT_METHOD(isSensorAvailable: (NSDictionary *)params resolver:(RCTPromise
 
   if (canEvaluatePolicy) {
     NSString *biometryType = [self getBiometryType:context];
-    NSDictionary *result = @{
+    
+    NSError *error;
+    if ([context canEvaluatePolicy:LAPolicyDeviceOwnerAuthenticationWithBiometrics error:&error]) {
+      NSDictionary *result = @{
+        @"available": @(YES),
+        @"biometryType": biometryType,
+        @"isBiometricEnrolled": @"YES",
+      };
+      resolve(result);
+      return;
+    } else if (error.code == LAErrorBiometryNotEnrolled) {
+     NSDictionary *result = @{
+        @"available": @(YES),
+        @"biometryType": biometryType,
+        @"isBiometricEnrolled": @"NO",
+      };
+      resolve(result);
+      return;
+    }
+     NSDictionary *result = @{
       @"available": @(YES),
       @"biometryType": biometryType
     };
-
     resolve(result);
   } else {
     NSString *errorMessage = [NSString stringWithFormat:@"%@", la_error];
@@ -41,6 +59,57 @@ RCT_EXPORT_METHOD(isSensorAvailable: (NSDictionary *)params resolver:(RCTPromise
     };
 
     resolve(result);
+  }
+}
+
+RCT_EXPORT_METHOD(promptEnrollBiometrics: (RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+LAContext *context = [[LAContext alloc] init];
+    NSError *error = nil;
+    
+    // Check if biometrics is available on the device
+    if ([context canEvaluatePolicy:LAPolicyDeviceOwnerAuthenticationWithBiometrics error:&error]) {
+        // Biometrics available, request authentication
+        [context evaluatePolicy:LAPolicyDeviceOwnerAuthenticationWithBiometrics
+                localizedReason:@"Authenticate to access this feature"
+                          reply:^(BOOL success, NSError * _Nullable error) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (success) {
+                    NSLog(@"Authentication successful!");
+                    NSDictionary *result = @{
+                      @"success": @(YES),
+                    };  
+                    resolve(result);
+                } else {
+                    NSLog(@"Authentication failed: %@", error.localizedDescription);
+                    NSDictionary *result = @{
+                      @"success": @(NO),
+                      @"error": error.localizedDescription  
+                    };  
+                    resolve(result);
+                }
+            });
+        }];
+    } else {
+        // Biometrics not available, show appropriate message
+        NSLog(@"Biometric authentication is not available: %@", error.localizedDescription);
+        NSDictionary *result = @{
+                          @"success": @(NO),
+                          @"error": error.localizedDescription  
+                        };  
+        resolve(result);
+    }
+} 
+
+- (BOOL)isBiometricEnrolled:(LAContext *)context {
+  NSError *error;
+  if ([context canEvaluatePolicy:LAPolicyDeviceOwnerAuthenticationWithBiometrics error:&error]) {
+    return YES;
+  } else {
+    if (error.code == LAErrorBiometryNotEnrolled) {
+      return NO;
+    } else {
+      return NULL;
+    }
   }
 }
 
